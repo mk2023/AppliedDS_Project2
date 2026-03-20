@@ -1,0 +1,1851 @@
+---
+title: "Data Analysis App"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(shiny)
+library(flexdashboard)
+library(DT)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(readxl)
+library(jsonlite)
+library(corrplot)
+library(e1071)
+
+## Reactive Values ==> dataset that can be used globally
+
+rv <- reactiveValues(
+  # Navigation
+  page = 1,
+  # page 1 = Opening
+  # page 2 = Load Data
+  # page 3 = Data Health Report
+  # page 4 = Data Cleaning Wizard
+  # page 5 = Feature Engineering
+  # page 6 = EDA
+  # page 7 = Thank You
+
+  # Data
+  raw_data         = NULL,
+  cleaned_data     = NULL,
+  engineered_data  = NULL,
+
+  # Scanning
+  col_report       = NULL,
+  col_issues       = list(),
+  wizard_cols      = NULL,
+
+  # Cleaning wizard state
+  current_col_idx   = 1,
+  current_issue_idx = 1,
+  columns_done      = FALSE,
+
+  # Feature engineering
+  new_col_names    = c(),
+
+  # EDA
+  analysis_done    = FALSE
+)
+```
+
+
+
+
+```{css, echo=FALSE}
+/* ============================================================
+   GLOBAL STYLES
+   ============================================================ */
+/* Remove flexdashboard default padding/grey background */
+.chart-wrapper, .chart-stage {
+  background: #ffffff !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+body {
+  background-color: #f5f7fa;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+/* ============================================================
+   WIZARD CARD - the white centered box on every page
+   ============================================================ */
+.wizard-card {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  padding: 50px 60px;
+  max-width: 700px;
+  margin: 60px auto;
+}
+
+/* Wide card for pages with tables */
+.wizard-card-wide {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  padding: 50px 60px;
+  max-width: 1000px;
+  margin: 60px auto;
+}
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+.wizard-card h2, .wizard-card-wide h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin-bottom: 6px;
+}
+
+.wizard-card p, .wizard-card-wide p {
+  color: #555;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.wizard-card hr, .wizard-card-wide hr {
+  border-color: #eee;
+  margin: 20px 0;
+}
+
+/* ============================================================
+   CENTERED BUTTON
+   ============================================================ */
+.btn-center {
+  display: block;
+  margin: 30px auto 0 auto;
+  text-align: center;
+}
+
+.btn-center .btn {
+  padding: 12px 40px;
+  font-size: 16px;
+  border-radius: 8px;
+}
+
+/* ============================================================
+   PRIMARY BUTTON STYLE
+   ============================================================ */
+.btn-primary {
+  background-color: #4361ee !important;
+  border-color: #4361ee !important;
+  border-radius: 8px !important;
+}
+
+.btn-primary:hover {
+  background-color: #3451d1 !important;
+  border-color: #3451d1 !important;
+}
+
+.btn-warning {
+  border-radius: 8px !important;
+}
+
+.btn-success {
+  border-radius: 8px !important;
+}
+
+.btn-danger {
+  border-radius: 8px !important;
+}
+
+/* ============================================================
+   STEP LIST ON OPENING PAGE
+   ============================================================ */
+.step-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+
+.step-list li {
+  padding: 10px 0 10px 40px;
+  position: relative;
+  color: #444;
+  font-size: 15px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.step-list li:last-child {
+  border-bottom: none;
+}
+
+.step-list li::before {
+  content: attr(data-step);
+  position: absolute;
+  left: 0;
+  top: 10px;
+  background: #4361ee;
+  color: white;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 24px;
+}
+
+/* ============================================================
+   PROGRESS INDICATOR
+   ============================================================ */
+.wizard-progress {
+  background: #f0f4ff;
+  border-left: 4px solid #4361ee;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  color: #333;
+}
+
+/* ============================================================
+   VALUE BOXES - override flexdashboard defaults
+   ============================================================ */
+.value-box {
+  border-radius: 10px !important;
+}
+```
+
+
+
+```{r}
+# All pages rendered inside one uiOutput (makes it more interactive)
+# Controlled by rv$page
+
+uiOutput("wizard_page")
+
+output$wizard_page <- renderUI({
+  switch(as.character(rv$page),
+         
+  ##page 1 = Welcome Page
+    "1" = tags$div(class = "wizard-card",
+      tags$div(style = "text-align: center; margin-bottom: 24px;",
+        tags$h2("Data Analysis App", style = "font-size:32px; font-weight:700; color:#1a1a2e;"),
+        tags$p("Upload, clean, engineer, and explore your dataset interactively.",
+               style = "color:#777; font-size:16px;")
+      ),
+      hr(),
+      h4("What you will do:", style = "color:#333; margin-bottom:12px;"),
+      tags$ul(class = "step-list",
+        tags$li("data-step" = "1", "Upload your dataset or use a built-in one"),
+        tags$li("data-step" = "2", "Review a data health report"),
+        tags$li("data-step" = "3", "Clean your data column by column"),
+        tags$li("data-step" = "4", "Engineer new features"),
+        tags$li("data-step" = "5", "Explore your data with interactive visualizations")
+      ),
+      hr(),
+      tags$p("Supported formats: .csv  .xlsx  .json  .rds",
+             style = "text-align:center; color:#aaa; font-size:13px;"),
+      tags$div(class = "btn-center",
+        actionButton("btn_p1_next", "Get Started", class = "btn-primary btn-lg")
+      )
+    ),
+  
+  ## Page 2 = Loading data page
+  
+    "2" = tags$div(class = "wizard-card",
+      h2("Load Data"),
+      hr(),
+      radioButtons("data_source", "Choose data source:",
+        choices = c("Upload my own file" = "upload", "Use built-in dataset" = "builtin")
+      ),
+      conditionalPanel(
+        condition = "input.data_source == 'upload'",
+        fileInput("file_upload", "Upload File:", accept = c(".csv",".xlsx",".json",".rds"))
+      ),
+      conditionalPanel(
+        condition = "input.data_source == 'builtin'",
+        selectInput("builtin_dataset", "Select dataset:", choices = c("mtcars","iris"))
+      ),
+      br(),
+      actionButton("btn_load_data", "Load Data", class = "btn-primary"),
+      br(), br(),
+      uiOutput("load_preview_ui"),
+      br(),
+      uiOutput("btn_p2_next_ui")
+    ),
+  ## Page 3 = Data Health Report
+
+    "3" = tags$div(class = "wizard-card-wide",
+      h2("Data Health Report"),
+      hr(),
+      h4("Dataset Overview"),
+      uiOutput("health_summary_cards"),
+      br(),
+      h4("Column-by-Column Health Table"),
+      DTOutput("health_table"),
+      br(),
+      fluidRow(
+        column(6, actionButton("btn_p3_back", "Back", class = "btn-default")),
+        column(6, actionButton("btn_p3_next", "Analyze, Fix & Check Columns", class = "btn-warning btn-lg"))
+      )
+    ),
+  ## Page 4 = cleaning data & reviewing column-by-column (TODO)
+
+    "4" = tags$div(class = "wizard-card",
+      h2("Data Cleaning"),
+      hr(),
+      tags$div(class = "wizard-progress",
+        uiOutput("wizard_progress_ui")
+      ),
+      hr(),
+      uiOutput("wizard_issue_ui"),
+      br(),
+      fluidRow(
+        column(4, actionButton("btn_next_issue", "Next", class = "btn-primary"))
+      ),
+      br(),
+      uiOutput("duplicates_panel_ui"),
+      uiOutput("btn_p4_next_ui")
+    ),
+  ## Page 5 = feature engineering (TODO)
+  "5" = tags$div(class = "wizard-card-wide",
+
+  h2("Feature Engineering"),
+  hr(),
+
+  h3("Numeric Feature Engineering"),
+
+  selectInput(
+    "fe_column",
+    "Select numeric column:",
+    choices = NULL
+  ),
+
+  selectInput(
+    "fe_method",
+    "Choose method:",
+    choices = c(
+      "Binning",
+      "Normalize",
+      "Standardize",
+      "Arithmetic Formula"
+    )
+  ),
+
+  conditionalPanel(
+    condition = "input.fe_method == 'Binning'",
+    numericInput("bin_n", "Number of bins:", value = 5, min = 2)
+  ),
+
+  conditionalPanel(
+    condition = "input.fe_method == 'Arithmetic Formula'",
+    textInput(
+      "formula_expr",
+      "Enter formula (example: col1 + col2)"
+    )
+  ),
+
+  textInput(
+    "new_feature_name",
+    "New feature column name:"
+  ),
+
+  actionButton(
+    "apply_feature",
+    "Apply Numeric Feature",
+    class = "btn-success"
+  ),
+
+  hr(),
+
+  h3("Categorical Feature Engineering"),
+
+  selectInput(
+    "cat_column",
+    "Select categorical column:",
+    choices = NULL
+  ),
+
+  actionButton(
+    "one_hot_encode",
+    "Apply One-Hot Encoding",
+    class = "btn-warning"
+  ),
+
+  hr(),
+
+  h3("Date Feature Engineering"),
+
+  selectInput(
+    "date_column",
+    "Select date column:",
+    choices = NULL
+  ),
+
+  actionButton(
+    "extract_date",
+    "Extract Year / Month / Day",
+    class = "btn-info"
+  ),
+
+  br(), br(),
+
+  fluidRow(
+    column(6, actionButton("btn_p5_back", "Back", class = "btn-default")),
+    column(6, actionButton("btn_p5_next", "Next", class = "btn-primary"))
+   )
+  ),
+ 
+  ## Page 6 = EDA (TODO)
+  "6" = tags$div(class = "wizard-card-wide",
+
+  h2("Exploratory Data Analysis"),
+  hr(),
+
+  h3("Dataset Summary (Each Column)"),
+
+  tableOutput("dataset_summary"),
+
+  hr(),
+  
+  h3('Distribution Summary'),
+  
+  selectInput('eda_summary_var','select variable:', choices = NULL),
+  tableOutput('eda_distribution_summary'),
+  
+  hr(),
+  
+
+  h3("Correlation Matrix (Heatmap)"),
+
+  plotOutput("correlation_heatmap"),
+  
+  hr(),
+  
+  h3('Interactive Visualization'),
+  
+  selectInput(
+    'eda_plot_type',
+    'Plot type:',
+    choices = c('Histogram','Boxplot','Bar Chart','Scattor Plot')
+  ),
+  
+  selectInput('eda_x_var','X variable:',choices = NULL),
+  
+  uiOutput('eda_y_var_ui'),
+  
+  plotOutput('eda_interactive_plot', height = '400px'),
+  
+  
+  
+  br(),
+
+  fluidRow(
+    column(6, actionButton("btn_p6_back", "Back", class = "btn-default")),
+    column(6, actionButton("btn_p6_next", "Done with Analysis", class = "btn-danger"))
+  )
+),
+    
+  ## Page 7 = Thank you 
+
+  "7" = tags$div(class = "wizard-card",
+  style = "text-align: center;",
+      br(),
+      h2("Thank you!", style = "font-size:32px; color:#1a1a2e;"),
+      p("Your data has been processed.", style = "color:#777; font-size:16px;"),
+      br(),
+      tags$div(class = "btn-center",
+        actionButton("btn_restart", "Upload a Different Dataset", class = "btn-primary btn-lg")
+      )
+    )
+  )
+})
+```
+
+```{r}
+# Page 1 -> 2
+observeEvent(input$btn_p1_next, { rv$page <- 2 })
+```
+
+```{r}
+# Page 2: Backend for Loading Data
+# Note that col_report is generated throgh the function scan_dataset()!
+
+observeEvent(input$btn_load_data, {
+  if (input$data_source == "builtin") {
+    rv$raw_data <- switch(input$builtin_dataset,
+      "mtcars" = mtcars,
+      "iris"   = iris
+    )
+  } else {
+    req(input$file_upload)
+    ext  <- tools::file_ext(input$file_upload$name)
+    path <- input$file_upload$datapath
+    rv$raw_data <- switch(ext,
+      "csv"  = read_csv(path, show_col_types = FALSE),
+      "xlsx" = readxl::read_excel(path),
+      "json" = as.data.frame(jsonlite::fromJSON(path)),
+      "rds"  = readRDS(path)
+    )
+  }
+  rv$cleaned_data    <- rv$raw_data
+  rv$engineered_data <- rv$raw_data
+  rv$col_report      <- scan_dataset(rv$raw_data)
+  rv$col_issues      <- build_issue_list(rv$col_report)
+  rv$wizard_cols     <- names(rv$raw_data)
+  showNotification("Data successfully loaded!", type = "message")
+})
+
+# Show data preview + Next button only after data is loaded
+
+output$load_preview_ui <- renderUI({
+  req(rv$raw_data)
+  tagList(
+    h4("Data Preview (First 10 rows)"),
+    DTOutput("load_data_preview")
+  )
+})
+output$load_data_preview <- renderDT({
+  req(rv$raw_data)
+  datatable(head(rv$raw_data, 10), options = list(scrollX = TRUE, dom = "t"), rownames = FALSE)
+})
+output$btn_p2_next_ui <- renderUI({
+  req(rv$raw_data)
+  fluidRow(
+    column(6, actionButton("btn_p2_back", "Back", class = "btn-default")),
+    column(6, actionButton("btn_p2_next", "View Data Health Report", class = "btn-primary"))
+  )
+})
+
+##Where each button leads to: 
+observeEvent(input$btn_p2_back, { rv$page <- 1 }) ## Going back to first Welcome Page
+observeEvent(input$btn_p2_next, { rv$page <- 3 }) ## Going to "Data Health Report" Page
+```
+
+
+```{r}
+## Producing Data Health Report (Showing the Overall Analysis of data)
+
+output$health_summary_cards <- renderUI({
+  req(rv$raw_data)
+  n_rows   <- nrow(rv$raw_data)
+  n_cols   <- ncol(rv$raw_data)
+  n_dupes  <- sum(duplicated(rv$raw_data))
+  n_issues <- if (is.null(rv$col_report)) 0 else sum(rv$col_report$has_issues)
+
+  make_card <- function(value, label, color) {
+    tags$div(
+      style = paste0(
+        "background:", color, "; border-radius:10px; padding:20px; text-align:center;",
+        "color:white; margin:8px;"
+      ),
+      tags$div(style = "font-size:32px; font-weight:700;", value),
+      tags$div(style = "font-size:13px; margin-top:4px; opacity:0.9;", label)
+    )
+  }
+
+  fluidRow(
+    column(3, make_card(n_rows,   "Total Rows",          "#4361ee")),
+    column(3, make_card(n_cols,   "Total Columns",       "#4361ee")),
+    column(3, make_card(n_dupes,  "Duplicate Rows",      "#f4a261")),
+    column(3, make_card(n_issues, "Columns with Issues", "#e63946"))
+  )
+})
+
+output$health_table <- renderDT({
+  req(rv$col_report)
+  display        <- rv$col_report[, c("column", "detected_type", "status")]
+  names(display) <- c("Column", "Detected Type", "Status")
+  datatable(display, options = list(scrollX = TRUE, dom = "t", pageLength = 50), rownames = FALSE)
+})
+```
+
+## should look over
+```{r}
+
+# Page 3 -> 4
+observeEvent(input$btn_p3_back, { rv$page <- 2 })
+observeEvent(input$btn_p3_next, {
+  rv$current_col_idx   <- 1
+  rv$current_issue_idx <- 1
+  rv$page <- 4
+})
+
+# Page 4 -> 5 (shown after columns_done)
+output$btn_p4_next_ui <- renderUI({
+  req(rv$columns_done)
+  fluidRow(
+    column(6, actionButton("btn_p4_back", "Back", class = "btn-default")),
+    column(6, actionButton("btn_p4_next", "Next: Feature Engineering", class = "btn-primary"))
+  )
+})
+observeEvent(input$btn_p4_back, { rv$page <- 3 })
+observeEvent(input$btn_p4_next, { rv$page <- 5 })
+
+# Page 5 -> 6
+observeEvent(input$btn_p5_back, { rv$page <- 4 })
+observeEvent(input$btn_p5_next, { rv$page <- 6 })
+# Detect numeric columns for Feature Engineering
+# Detect numeric columns for Feature Engineering
+observeEvent(rv$page, {
+
+  if(rv$page != 5) return()
+
+  df <- rv$cleaned_data
+
+  if(is.null(df)){
+    df <- rv$raw_data
+  }
+
+  if(is.null(df)) return()
+
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+
+  categorical_cols <- names(df)[sapply(df, function(x)
+    is.character(x) || is.factor(x)
+  )]
+
+  date_cols <- names(df)[sapply(df, inherits, "Date")]
+
+  updateSelectInput(session, "fe_column", choices = numeric_cols)
+
+  updateSelectInput(session, "cat_column", choices = categorical_cols)
+
+  updateSelectInput(session, "date_column", choices = date_cols)
+
+})
+# Apply Feature Engineering
+observeEvent(input$apply_feature, {
+
+  df <- rv$cleaned_data
+  if(is.null(df)){
+    df <- rv$raw_data
+  }
+
+  req(df)
+  req(input$fe_column)
+  req(input$new_feature_name)
+
+  col <- input$fe_column
+  new_name <- input$new_feature_name
+  method <- input$fe_method
+
+  if(method == "Binning"){
+
+    bins <- input$bin_n
+
+    df[[new_name]] <- cut(
+      df[[col]],
+      breaks = bins,
+      labels = FALSE
+    )
+
+  } else if(method == "Normalize"){
+
+    x <- df[[col]]
+
+    df[[new_name]] <- (x - min(x, na.rm=TRUE)) /
+                      (max(x, na.rm=TRUE) - min(x, na.rm=TRUE))
+
+  } else if(method == "Standardize"){
+
+    x <- df[[col]]
+
+    df[[new_name]] <- (x - mean(x, na.rm=TRUE)) /
+                      sd(x, na.rm=TRUE)
+
+  } else if(method == "Arithmetic Formula"){
+
+    expr <- parse(text = input$formula_expr)
+
+    df[[new_name]] <- eval(expr, df)
+
+  }
+
+  rv$engineered_data <- df
+
+  showNotification(
+    paste("Feature", new_name, "created!"),
+    type = "message"
+  )
+
+})
+observe({
+
+  if(is.null(rv$engineered_data)){
+    rv$engineered_data <- rv$cleaned_data
+  }
+
+})
+
+# Categorical Feature Engineering (One-hot encoding)
+
+observeEvent(input$one_hot_encode, {
+
+  df <- rv$engineered_data
+
+  if(is.null(df)){
+    df <- rv$cleaned_data
+  }
+
+  req(df)
+  req(input$cat_column)
+
+  col <- input$cat_column
+
+  dummies <- model.matrix(~ . -1, df[col])
+
+  df <- cbind(df, dummies)
+
+  rv$engineered_data <- df
+
+  showNotification(
+    paste("One-hot encoding applied to", col),
+    type = "message"
+  )
+
+})
+
+# Date Feature Engineering
+
+observeEvent(input$extract_date, {
+
+  df <- rv$engineered_data
+
+  if(is.null(df)){
+    df <- rv$cleaned_data
+  }
+
+  req(df)
+  req(input$date_column)
+
+  col <- input$date_column
+
+  df[[col]] <- as.Date(df[[col]])
+
+  df[[paste0(col,"_year")]]  <- format(df[[col]], "%Y")
+  df[[paste0(col,"_month")]] <- format(df[[col]], "%m")
+  df[[paste0(col,"_day")]]   <- format(df[[col]], "%d")
+
+  rv$engineered_data <- df
+
+  showNotification(
+    paste("Date features extracted from", col),
+    type = "message"
+  )
+
+})
+
+
+# Page 6 -> 7
+observeEvent(input$btn_p6_back, { rv$page <- 5 })
+observeEvent(input$btn_p6_next, { rv$page <- 7 })
+
+# Dataset Summary
+
+output$dataset_summary <- renderTable({
+
+  df <- rv$engineered_data
+
+  if(is.null(df)){
+    df <- rv$cleaned_data
+  }
+
+  if(is.null(df)){
+    df <- rv$raw_data
+  }
+
+  req(df)
+
+  summary(df)
+
+})
+
+# Correlation Heatmap
+
+output$correlation_heatmap <- renderPlot({
+
+  df <- rv$engineered_data
+
+  if(is.null(df)){
+    df <- rv$cleaned_data
+  }
+
+  if(is.null(df)){
+    df <- rv$raw_data
+  }
+
+  req(df)
+
+  num_df <- df[, sapply(df, is.numeric)]
+
+  if(ncol(num_df) < 2){
+
+    plot.new()
+    text(0.5,0.5,"Not enough numeric columns")
+
+    return()
+
+  }
+
+  cor_matrix <- cor(num_df, use="complete.obs")
+
+  corrplot(cor_matrix, method="color")
+
+})
+
+get_eda_data <- reactive({
+  df <- rv$engineered_data
+  if (is.null(df)) df <- rv$cleaned_data
+  if (is.null(df)) df <- rv$raw_data
+  req(df)
+  df
+})
+
+observeEvent(rv$page,{
+  if (rv$page != 6) return()
+  df <- get_eda_data()
+  
+  updateSelectInput(session, 'eda_summary_var',choices = names(df))
+  updateSelectInput(session, 'eda_x_var', choices = names(df))
+})
+
+output$eda_distribution_summary <- renderTable({
+  df <- get_eda_data()
+  req(input$eda_summary_var)
+  x <- df[[input$eda_summary_var]]
+  
+  if (is.numeric(x)){
+    return(data.frame(
+      Mean = mean(x, na.rm = TRUE),
+      Median = median(x,na.rm = TRUE),
+      SD = sd(x,na.rm = TRUE),
+      Min = min(x,na.rm = TRUE),
+      Max = max(x, na.rm = TRUE)
+    
+    ))
+  }
+  
+  tbl <- sort(table(x), decreasing = TRUE)
+  
+  data.frame(
+    Category = names(tbl),
+    Count = as.numeric(tbl)
+  )
+})
+
+output$eda_y_var_ui <- renderUI({
+  if(input$eda_plot_type == 'Scatter Plot'){
+    df <-get_eda_data()
+    num_cols <- names(df)[sapply(df, is.numeric)]
+    
+    selectInput('eda_y_var','Y variable:', choices = num_cols)
+  }
+})
+
+output$eda_interactive_plot <- renderPlot({
+  df <- get_eda_data()
+  req(input$eda_plot_type, input$eda_x_var)
+
+  x <- input$eda_x_var
+
+  if (input$eda_plot_type == "Histogram"){
+    req(is.numeric(df[[x]]))
+    hist(df[[x]], main = x, col = "blue")
+  } else if (input$eda_plot_type == "Boxplot"){
+    req(is.numeric(df[[x]]))
+    boxplot(df[[x]], main = x, col = "green")
+  } else if (input$eda_plot_type == "Bar Chart"){
+    barplot(table(df[[x]]), main = x)
+  } else if (input$eda_plot_type == "Scatter Plot"){
+
+    req(input$eda_y_var)
+    plot(df[[x]], df[[input$eda_y_var]],
+         xlab = x,
+         ylab = input$eda_y_var,
+         pch = 19)
+
+  }
+
+})
+# Restart
+observeEvent(input$btn_restart, {
+  rv$page              <- 1
+  rv$raw_data          <- NULL
+  rv$cleaned_data      <- NULL
+  rv$engineered_data   <- NULL
+  rv$col_report        <- NULL
+  rv$col_issues        <- list()
+  rv$wizard_cols       <- NULL
+  rv$current_col_idx   <- 1
+  rv$current_issue_idx <- 1
+  rv$columns_done      <- FALSE
+  rv$new_col_names     <- c()
+  rv$analysis_done     <- FALSE
+})
+```
+
+
+```{r}
+# Function scan_dataset() is defined
+# It loops through every column, figures out what type each column is, and runs a series of checks to detect problems. For each problem it finds, it adds an issue key (like "missing" or "outliers") to a warnings list for that column.
+# it returns a summary table with one row per column showing the type, status, and all the detected issues
+
+## TODO: add on to scan_dataset() for other column types
+
+scan_dataset <- function(df) {
+  results <- lapply(names(df), function(col_name) { ##loops
+    x        <- df[[col_name]]
+    warnings <- c()
+    notes    <- c()
+
+    if (inherits(x, c("Date", "POSIXct", "POSIXlt"))) {
+      detected_type <- "Date"
+      total_n <- length(x)
+      # date scanning
+      n_missing <- sum(is.na(x))
+      pct_miss  <- round(100 * n_missing / total_n, 1)
+    
+      if (n_missing > 0) {
+        warnings <- c(warnings, "missing")
+        notes <- c(notes, paste0(pct_miss, "% of dates are missing (", n_missing, " rows)"))
+      }
+      # checking future dates
+      n_future <- sum(x > Sys.Date(), na.rm = TRUE)
+      pct_future <- round(100 * n_future / total_n, 1)
+    
+      if (n_future > 0) {
+        warnings <- c(warnings, "future_dates")
+        notes <- c(notes, paste0(pct_future, "% of dates are future dates (", n_future, " rows)"))
+      }
+      # checking implausible dates
+      n_old <- sum(x < as.Date("1900-01-01"), na.rm = TRUE)
+      pct_old <- round(100 * n_old / total_n, 1)
+    
+      if (n_old > 0) {
+        warnings <- c(warnings, "implausible_dates")
+        notes <- c(notes, paste0(pct_old, "% of dates are implausible dates (", n_old, " rows)"))
+      }
+    } else if (is.numeric(x)) {
+      detected_type <- "Numeric"
+
+      n_missing <- sum(is.na(x))
+      pct_miss  <- round(100 * n_missing / length(x), 1)
+      if (n_missing > 0) {
+        warnings <- c(warnings, "missing")
+        notes    <- c(notes, paste0(pct_miss, "% of values are missing"))
+      }
+
+      q          <- quantile(x, c(0.25, 0.75), na.rm = TRUE)
+      iqr        <- q[2] - q[1]
+      n_outliers <- sum(x < q[1] - 1.5*iqr | x > q[2] + 1.5*iqr, na.rm = TRUE)
+      if (n_outliers > 0) {
+        warnings <- c(warnings, "outliers")
+        notes    <- c(notes, paste0(n_outliers, " outliers found via IQR method"))
+      }
+
+      skew_val <- round(e1071::skewness(x, na.rm = TRUE), 2)
+      if (!is.na(skew_val) && abs(skew_val) > 1) {
+        warnings <- c(warnings, "skewed")
+        notes    <- c(notes, paste0("Skewness score: ", skew_val))
+      }
+
+      if (!is.na(var(x, na.rm = TRUE)) && var(x, na.rm = TRUE) == 0) {
+        warnings <- c(warnings, "zero_variance")
+        notes    <- c(notes, paste0("All values are identical (value: ", x[1], ")"))
+      }
+
+      n_unique <- length(unique(x[!is.na(x)]))
+      if (n_unique <= 5 && n_unique > 0) {
+        warnings <- c(warnings, "looks_categorical")
+        notes    <- c(notes, paste0("Only ", n_unique, " unique values detected"))
+      }
+
+    } else if (is.character(x) || is.factor(x)) {
+      x_char        <- as.character(x)
+      non_na        <- x_char[!is.na(x_char) & x_char != ""]
+      looks_num     <- length(non_na) > 0 && all(grepl("^-?[0-9]*\\.?[0-9]+$", non_na))
+      n_unique      <- length(unique(non_na))
+      looks_free    <- n_unique / max(length(non_na), 1) > 0.9 && n_unique > 20
+
+      if (looks_num) {
+        detected_type <- "Text (looks numeric)"
+        warnings      <- c(warnings, "type_mismatch_numeric")
+        notes         <- c(notes, "Values look numeric but stored as text")
+      } else if (looks_free) {
+        detected_type <- "Text (free text)"
+        warnings      <- c(warnings, "free_text")
+        notes         <- c(notes, paste0(n_unique, " unique values"))
+      } else {
+        detected_type <- "Categorical"
+        # categorical scanning
+        n_missing <- sum(is.na(x_char) | x_char == "")
+        pct_miss <- round(100 * n_missing / length(x_char), 1)
+        
+        if (n_missing > 0) {
+          warnings <- c(warnings, "missing")
+          notes <- c(notes, paste0(pct_miss, "% values are missing (", n_missing, " rows)"))
+        }
+        
+        freq <- table(non_na)
+        n_unique <- length(freq)
+        
+        # only one category
+        if (n_unique == 1) {
+          warnings <- c(warnings, "one_category")
+          notes <- c(notes, "Only one category present in column")
+        }
+        
+        # dominant category
+        dominant_pct <- max(freq) / sum(freq)
+        if (dominant_pct > 0.9) {
+          warnings <- c(warnings, "dominant_category")
+          notes <- c(notes, paste0(round(dominant_pct*100,1), "% values belong to one category"))
+        }
+        
+        # too many unique
+        if (n_unique > 20) {
+          warnings <- c(warnings, "too_many_unique")
+          notes <- c(notes, paste0(n_unique, " unique categories detected"))
+        }
+        
+        # rare categories
+        rare <- sum(freq < 5)
+        if (rare > 0) {
+          warnings <- c(warnings, "rare_categories")
+          notes <- c(notes, paste0(rare, " rare categories detected"))
+        }
+              }
+    } else {
+      detected_type <- "Unknown"
+    }
+
+    has_issues <- length(warnings) > 0
+    status     <- if (has_issues) paste0("Issues found (", length(warnings), ")") else "No issues"
+
+    list(
+      column        = col_name,
+      detected_type = detected_type,
+      has_issues    = has_issues,
+      status        = status,
+      warnings      = warnings,
+      notes         = notes
+    )
+  })
+
+  report_df <- data.frame(
+    column        = sapply(results, `[[`, "column"),
+    detected_type = sapply(results, `[[`, "detected_type"),
+    has_issues    = sapply(results, `[[`, "has_issues"),
+    status        = sapply(results, `[[`, "status"),
+    stringsAsFactors = FALSE
+  )
+  attr(report_df, "warnings") <- lapply(results, `[[`, "warnings")
+  attr(report_df, "notes")    <- lapply(results, `[[`, "notes")
+  report_df
+}
+
+```
+
+```{r}
+# build_issue_list: takes the summary table from scan_dataset() and restructures the warnings into a named list --> app can easily look up what issues that specific column has 
+build_issue_list <- function(col_report) {
+  w        <- attr(col_report, "warnings")
+  names(w) <- col_report$column
+  w
+}
+```
+
+
+```{r}
+# Functions for navigating between issues (page for data cleaning)
+
+# renders progress text at top of cleaning page (ex. Column 2 of 5: Age -- Issue 1 of 3)
+output$wizard_progress_ui <- renderUI({
+  req(rv$wizard_cols)
+  col_name   <- rv$wizard_cols[rv$current_col_idx]
+  issues     <- rv$col_issues[[col_name]]
+  total_cols <- length(rv$wizard_cols)
+  total_iss  <- length(issues)
+  cur_iss    <- rv$current_issue_idx
+
+  tagList(
+    p(strong(paste0("Column ", rv$current_col_idx, " of ", total_cols, ": ", col_name))),
+    if (total_iss == 0 || cur_iss > total_iss) {
+      p("Summary")
+    } else {
+      p(paste0("Issue ", cur_iss, " of ", total_iss))
+    }
+  )
+})
+
+# Handles what happens when user clicks "Next" issue:
+# issues still left for that column --> move to next issue
+# issues for this column are done but there are more columns --> move to next column
+# all columns are done with reviewing --> set rv$columns_done = TRUE, which will review duplicates panel and "Next" button for feature engineering 
+observeEvent(input$btn_next_issue, {
+  req(rv$wizard_cols)
+  col_name   <- rv$wizard_cols[rv$current_col_idx]
+  issues     <- rv$col_issues[[col_name]]
+  total_iss  <- length(issues)
+  total_cols <- length(rv$wizard_cols)
+
+  if (rv$current_issue_idx < total_iss) {
+    # Still more issues in this column — go to next issue
+    rv$current_issue_idx <- rv$current_issue_idx + 1
+  } else if (rv$current_col_idx < total_cols) {
+    # Last issue of this column — jump straight to next column
+    rv$current_col_idx   <- rv$current_col_idx + 1
+    rv$current_issue_idx <- 1
+  } else {
+    # Last issue of last column — go to duplicates panel
+    rv$columns_done <- TRUE
+  }
+})
+
+```
+
+```{r}
+
+## Main display panel when cleaning up the data. 
+## TODO
+
+output$wizard_issue_ui <- renderUI({
+  req(rv$raw_data, rv$wizard_cols)
+  
+  col_name <- rv$wizard_cols[rv$current_col_idx]
+  issues   <- rv$col_issues[[col_name]]
+  col_type <- rv$col_report$detected_type[rv$col_report$column == col_name]
+  x        <- rv$cleaned_data[[col_name]]
+  notes_list <- attr(rv$col_report, "notes")
+  col_notes <- notes_list[[col_name]]
+  
+  # Summary screen --> when there are no issues OR all issues have been reviewed
+  if (length(issues) == 0 || rv$current_issue_idx > length(issues)) {
+    if (is.numeric(x)) {
+      tagList(
+        h4(paste0("All issues reviewed for: ", col_name)),
+        hr(),
+        p(
+          strong("Mean: "),     round(mean(x,   na.rm = TRUE), 2), " | ",
+          strong("Median: "),   round(median(x, na.rm = TRUE), 2), " | ",
+          strong("Std: "),      round(sd(x,     na.rm = TRUE), 2), " | ",
+          strong("Min: "),      round(min(x,    na.rm = TRUE), 2), " | ",
+          strong("Max: "),      round(max(x,    na.rm = TRUE), 2), " | ",
+          strong("Variance: "), round(var(x,    na.rm = TRUE), 2)
+        )
+      )
+    } else if (grepl("Categorical", col_type)) {
+      # categorical summary + encoding choice
+      freq <- sort(table(x), decreasing = TRUE)
+      tagList(
+
+    h4(paste0("All issues reviewed for: ", col_name)),
+
+    if (length(col_notes) > 0)
+      tagList(
+        hr(),
+        strong("Detected Issues:"),
+        tags$ul(lapply(col_notes, tags$li))
+      ),
+
+    hr(),
+
+    strong("Category Distribution:"),
+
+    DT::datatable(
+      data.frame(
+        Category = names(freq),
+        Count = as.numeric(freq),
+        Percentage = round(100 * as.numeric(freq) / sum(freq), 1)
+      ),
+      options = list(
+        pageLength = 5,
+        dom = "t"
+      ),
+      rownames = FALSE
+    )
+  )
+    } else if (grepl("Date", col_type)) {
+      # date summary
+      tagList(
+
+      h4(paste0("All issues reviewed for: ", col_name)),
+  
+      hr(),
+  
+      p(
+        strong("Earliest Date: "), min(x,na.rm=TRUE)," | ",
+        strong("Latest Date: "), max(x,na.rm=TRUE)," | ",
+        strong("Missing: "), sum(is.na(x))
+      )
+    )
+    } else {
+      tagList(
+        h4(paste0("All issues reviewed for: ", col_name)),
+        p("Summary - TODO")
+      )
+    }
+
+ } else { ## When there are issues to go through
+    issue_key <- issues[rv$current_issue_idx]
+
+    if (grepl("Numeric", col_type)) {
+      render_numeric_issue_ui(col_name, issue_key, x)
+    } else if (grepl("Categorical", col_type)) {
+      # TODO (Team Member 2): render_categorical_issue_ui(col_name, issue_key, x)
+      render_categorical_issue_ui(col_name, issue_key, x)
+    } else if (grepl("Text", col_type)) {
+      # TODO (Team Member 2): render_text_issue_ui(col_name, issue_key, x)
+      render_text_issue_ui(col_name, issue_key, x)
+    } else if (grepl("Date", col_type)) {
+      # TODO (Team Member 2): render_date_issue_ui(col_name, issue_key, x)
+      render_date_issue_ui(col_name, issue_key, x)
+    } else {
+      tagList(h4("Unknown column type"), p(col_type))
+    }
+  }
+})
+```
+
+```{r}
+# DEALING WITH NUMERIC ISSUE
+
+# UI panel for each numeric issue: 
+
+render_numeric_issue_ui <- function(col_name, issue_key, x) {
+  input_id   <- paste0("fix_", col_name, "_", issue_key)
+  btn_id     <- paste0("btn_apply_", col_name, "_", issue_key)
+  preview_id <- paste0("preview_", col_name, "_", issue_key)
+
+  switch(issue_key,
+    
+      # Issue #1: Some rows have no value in this column.
+    "missing" = {
+      n_miss <- sum(is.na(x))
+      pct    <- round(100 * n_miss / length(x), 1)
+      tagList(
+        h4(paste0("Missing Values - ", col_name)),
+        p(paste0(pct, "% of values are missing (", n_miss, " rows)")),
+        hr(),
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c("Fill with Mean" = "mean", "Fill with Median" = "median",
+                      "Fill with Mode" = "mode", "Fixed value" = "fixed",
+                      "Remove rows" = "remove", "Leave as is" = "leave")
+        ),
+        conditionalPanel(
+          condition = paste0('input["', input_id, '"] == "fixed"'),
+          numericInput(paste0(input_id, "_val"), "Enter fixed value:", value = 0)
+        ),
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+        DTOutput(preview_id)
+      )
+    },
+      # Issue #2: Some values are extremely far from rest of the data.
+    "outliers" = {
+        q          <- quantile(x, c(0.25, 0.75), na.rm = TRUE)
+        iqr        <- q[2] - q[1]
+        n_outliers <- sum(x < q[1] - 1.5*iqr | x > q[2] + 1.5*iqr, na.rm = TRUE)
+        
+        if (n_outliers == 0) {
+          return(tagList(
+            h4(paste0("Outliers - ", col_name)),
+            p("No outliers remain in this column. Click Next to continue."),
+            br(),
+            DTOutput(preview_id)   # <-- ADD THIS
+          ))
+        }
+        
+        tagList(
+          h4(paste0("Outliers Detected - ", col_name)),
+          p(paste0(n_outliers, " outliers found via IQR method")),
+          hr(),
+          selectInput(input_id, "How would you like to fix this?",
+            choices = c("Cap to IQR bounds" = "cap", "Remove rows" = "remove", "Leave as is" = "leave")
+          ),
+          br(),
+          actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+          br(), br(),
+          DTOutput(preview_id)
+        )
+      },
+      #3: data is heavily skewed in one direction
+    "skewed" = {
+      skew_val <- round(e1071::skewness(x, na.rm = TRUE), 2)
+      tagList(
+        h4(paste0("Heavily Skewed - ", col_name)),
+        p(paste0("Skewness score: ", skew_val)),
+        hr(),
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c("Log transform" = "log", "Square root transform" = "sqrt", "Leave as is" = "leave")
+        ),
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+        DTOutput(preview_id)
+      )
+    },
+      #4: Every single row has exact same value. 
+    "zero_variance" = {
+      tagList(
+        h4(paste0("Zero Variance - ", col_name)),
+        p(paste0("All values are identical (value: ", x[1], ")")),
+        hr(),
+        selectInput(input_id, "What would you like to do?",
+          choices = c("Drop column" = "drop", "Leave as is" = "leave")
+        ),
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+        DTOutput(preview_id)
+      )
+    },
+      #5: Column is stored as a number, but only has 5 or fewer unique values.
+    "looks_categorical" = {
+      n_unique <- length(unique(x[!is.na(x)]))
+      tagList(
+        h4(paste0("Looks Categorical - ", col_name)),
+        p(paste0("Only ", n_unique, " unique values detected")),
+        hr(),
+        selectInput(input_id, "What would you like to do?",
+          choices = c("Change to Categorical" = "to_cat", "Leave as is" = "leave")
+        ),
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+        DTOutput(preview_id)
+      )
+    },
+
+    tagList(h4("Unknown issue:"), p(issue_key))
+  )
+}
+```
+
+```{r}
+#dealing with categorical issues
+render_categorical_issue_ui <- function(col_name, issue_key, x) {
+
+  input_id   <- paste0("fix_", col_name, "_", issue_key)
+  btn_id     <- paste0("btn_apply_", col_name, "_", issue_key)
+  preview_id <- paste0("preview_", col_name, "_", issue_key)
+
+  switch(issue_key,
+
+    # Issue 1: Missing values
+    "missing" = {
+
+      n_miss <- sum(is.na(x))
+      pct    <- round(100 * n_miss / length(x), 1)
+
+      tagList(
+        h4(paste0("Missing Values - ", col_name)),
+        p(paste0(pct, "% of values are missing (", n_miss, " rows)")),
+        hr(),
+
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c(
+            "Fill with Mode" = "mode",
+            "Remove rows" = "remove",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    # Issue 2: Rare categories
+    "rare_categories" = {
+
+      freq <- sort(table(x), decreasing = TRUE)
+
+      tagList(
+        h4(paste0("Rare Categories - ", col_name)),
+        p("Some categories appear very infrequently."),
+        hr(),
+
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c(
+            "Combine rare categories into 'Other'" = "combine",
+            "Remove rare categories" = "remove",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    tagList(h4("Unknown issue:"), p(issue_key))
+  )
+}
+```
+
+```{r}
+#dealing with text issues
+render_text_issue_ui <- function(col_name, issue_key, x) {
+
+  input_id   <- paste0("fix_", col_name, "_", issue_key)
+  btn_id     <- paste0("btn_apply_", col_name, "_", issue_key)
+  preview_id <- paste0("preview_", col_name, "_", issue_key)
+
+  switch(issue_key,
+
+    # Issue: Text looks numeric
+    "type_mismatch_numeric" = {
+
+      tagList(
+        h4(paste0("Type Mismatch - ", col_name)),
+        p("Values look numeric but are stored as text."),
+        hr(),
+
+        selectInput(input_id, "What would you like to do?",
+          choices = c(
+            "Convert to Numeric" = "to_numeric",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    # Issue: Free text
+    "free_text" = {
+
+      n_unique <- length(unique(x))
+
+      tagList(
+        h4(paste0("Free Text Detected - ", col_name)),
+        p(paste0(n_unique, " unique values detected")),
+        hr(),
+
+        selectInput(input_id, "What would you like to do?",
+          choices = c(
+            "Convert to Categorical" = "to_cat",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    tagList(h4("Unknown issue:"), p(issue_key))
+  )
+}
+```
+
+```{r}
+# dealing with dates issues
+render_date_issue_ui <- function(col_name, issue_key, x) {
+
+  input_id   <- paste0("fix_", col_name, "_", issue_key)
+  btn_id     <- paste0("btn_apply_", col_name, "_", issue_key)
+  preview_id <- paste0("preview_", col_name, "_", issue_key)
+
+  switch(issue_key,
+
+    # Missing dates
+    "missing" = {
+
+      n_miss <- sum(is.na(x))
+      pct    <- round(100 * n_miss / length(x), 1)
+
+      tagList(
+        h4(paste0("Missing Dates - ", col_name)),
+        p(paste0(pct, "% of dates are missing (", n_miss, " rows)")),
+        hr(),
+
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c(
+            "Remove rows" = "remove",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    # Future dates
+    "future_dates" = {
+
+      n_future <- sum(x > Sys.Date(), na.rm = TRUE)
+
+      tagList(
+        h4(paste0("Future Dates Detected - ", col_name)),
+        p(paste0(n_future, " future dates detected")),
+        hr(),
+
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c(
+            "Remove rows" = "remove",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    # Implausible dates
+    "implausible_dates" = {
+
+      n_old <- sum(x < as.Date("1900-01-01"), na.rm = TRUE)
+
+      tagList(
+        h4(paste0("Implausible Dates - ", col_name)),
+        p(paste0(n_old, " extremely old dates detected")),
+        hr(),
+
+        selectInput(input_id, "How would you like to fix this?",
+          choices = c(
+            "Remove rows" = "remove",
+            "Leave as is" = "leave"
+          )
+        ),
+
+        br(),
+        actionButton(btn_id, "Apply Fix", class = "btn-primary"),
+        br(), br(),
+
+        DTOutput(preview_id)
+      )
+    },
+
+    tagList(h4("Unknown issue:"), p(issue_key))
+  )
+}
+```
+```{r}
+#fix categorical issues
+apply_categorical_fix <- function(col_name, issue_key, choice) {
+
+  x <- rv$cleaned_data[[col_name]]
+
+  if (choice == "remove") {
+
+    if (issue_key == "missing") {
+      rv$cleaned_data <- rv$cleaned_data[!is.na(rv$cleaned_data[[col_name]]), ]
+    }
+
+    if (issue_key == "rare_categories") {
+
+      freq <- table(x)
+      rare <- names(freq[freq < 5])
+
+      rv$cleaned_data <- rv$cleaned_data[
+        !(rv$cleaned_data[[col_name]] %in% rare), ]
+    }
+
+    rv$engineered_data <- rv$cleaned_data
+    return()
+  }
+
+  if (choice == "leave") return()
+
+  fixed_col <- switch(choice,
+
+    "mode" = {
+      mv <- names(sort(table(x), decreasing = TRUE))[1]
+      x[is.na(x)] <- mv
+      x
+    },
+
+    "combine" = {
+      freq <- table(x)
+      rare <- names(freq[freq < 5])
+      x[x %in% rare] <- "Other"
+      x
+    },
+
+    x
+  )
+
+  rv$cleaned_data[[col_name]] <- fixed_col
+  rv$engineered_data[[col_name]] <- fixed_col
+}
+```
+
+```{r}
+#fix text issues
+apply_text_fix <- function(col_name, issue_key, choice) {
+
+  x <- rv$cleaned_data[[col_name]]
+
+  if (choice == "leave") return()
+
+  fixed_col <- switch(choice,
+
+    "to_numeric" = {
+      suppressWarnings(as.numeric(x))
+    },
+
+    "to_cat" = {
+      as.factor(x)
+    },
+
+    x
+  )
+
+  rv$cleaned_data[[col_name]] <- fixed_col
+  rv$engineered_data[[col_name]] <- fixed_col
+}
+```
+
+```{r}
+#fix date issues
+apply_date_fix <- function(col_name, issue_key, choice) {
+
+  x <- rv$cleaned_data[[col_name]]
+
+  if (choice == "remove") {
+
+    if (issue_key == "missing") {
+
+      rv$cleaned_data <- rv$cleaned_data[
+        !is.na(rv$cleaned_data[[col_name]]), ]
+
+    } else if (issue_key == "future_dates") {
+
+      rv$cleaned_data <- rv$cleaned_data[
+        rv$cleaned_data[[col_name]] <= Sys.Date(), ]
+
+    } else if (issue_key == "implausible_dates") {
+
+      rv$cleaned_data <- rv$cleaned_data[
+        rv$cleaned_data[[col_name]] >= as.Date("1900-01-01"), ]
+    }
+
+    rv$engineered_data <- rv$cleaned_data
+    return()
+  }
+
+  if (choice == "leave") return()
+}
+```
+
+
+```{r}
+# FIXING LOGIC FOR NUMERIC ISSUES
+
+apply_numeric_fix <- function(col_name, issue_key, choice, fixed_val = NULL) {
+  x <- rv$cleaned_data[[col_name]]
+  
+  # If user wants to delete the rows:
+  if (choice == "remove") { 
+    if (issue_key == "missing") {
+      rv$cleaned_data <- rv$cleaned_data[!is.na(rv$cleaned_data[[col_name]]), ]
+    } else if (issue_key == "outliers") {
+      q   <- quantile(x, c(0.25, 0.75), na.rm = TRUE)
+      iqr <- q[2] - q[1]
+      rv$cleaned_data <- rv$cleaned_data[
+        !(rv$cleaned_data[[col_name]] < q[1] - 1.5*iqr |
+          rv$cleaned_data[[col_name]] > q[2] + 1.5*iqr), ]
+    }
+    rv$engineered_data <- rv$cleaned_data
+    return()
+  }
+  # If user wants to drop entire column: 
+  if (choice == "drop")   { rv$cleaned_data[[col_name]] <- NULL; rv$engineered_data[[col_name]] <- NULL; return() }
+  
+  
+  # If user wants to do nothing, return immediately
+  if (choice == "leave")  return()
+
+  # only runs when choice is one that modifies column values (or change it to a categorical column)
+  fixed_col <- switch(choice,
+    "to_cat" = as.factor(x),
+    "mean"   = { x[is.na(x)] <- mean(x, na.rm = TRUE);   x },
+    "median" = { x[is.na(x)] <- median(x, na.rm = TRUE); x },
+    "mode"   = { mv <- as.numeric(names(sort(table(x), decreasing = TRUE))[1]); x[is.na(x)] <- mv; x },
+    "fixed"  = { x[is.na(x)] <- fixed_val; x },
+    "cap"    = {
+      q   <- quantile(x, c(0.25, 0.75), na.rm = TRUE)
+      iqr <- q[2] - q[1]
+      x[x < q[1] - 1.5*iqr] <- q[1] - 1.5*iqr
+      x[x > q[2] + 1.5*iqr] <- q[2] + 1.5*iqr
+      x
+    },
+    "log"    = { x[x <= 0] <- NA; log(x) },
+    "sqrt"   = { x[x <  0] <- NA; sqrt(x) },
+    x
+  )
+
+  rv$cleaned_data[[col_name]]    <- fixed_col
+  rv$engineered_data[[col_name]] <- fixed_col
+}
+
+# Observe apply buttons + show before/after preview
+observe({
+  req(rv$wizard_cols, rv$cleaned_data)
+  lapply(rv$wizard_cols, function(col_name) {
+    lapply(rv$col_issues[[col_name]], function(issue_key) {
+      
+      # Builds the unique IDs for the button, dropdown, fixedvalue input, and preview table for each column + issue combo. 
+      btn_id     <- paste0("btn_apply_", col_name, "_", issue_key)
+      fix_id     <- paste0("fix_", col_name, "_", issue_key)
+      val_id     <- paste0("fix_", col_name, "_", issue_key, "_val")
+      preview_id <- paste0("preview_", col_name, "_", issue_key)
+      
+      # listens for when the user clicks "Apply Fix" button for this specific column + issue. When clicked, it runs everything inside the {}
+      observeEvent(input[[btn_id]], {
+
+        col_type <- rv$col_report$detected_type[
+          rv$col_report$column == col_name
+        ]
+      
+        if (grepl("Numeric", col_type)) {
+      
+          apply_numeric_fix(
+            col_name,
+            issue_key,
+            input[[fix_id]],
+            input[[val_id]]
+          )
+      
+        } else if (grepl("Categorical", col_type)) {
+      
+          apply_categorical_fix(
+            col_name,
+            issue_key,
+            input[[fix_id]]
+          )
+      
+        } else if (grepl("Text", col_type)) {
+      
+          apply_text_fix(
+            col_name,
+            issue_key,
+            input[[fix_id]]
+          )
+      
+        } else if (grepl("Date", col_type)) {
+      
+          apply_date_fix(
+            col_name,
+            issue_key,
+            input[[fix_id]]
+          )
+      
+        }
+      
+        showNotification(
+          paste0("Fix applied to ", col_name, "."),
+          type = "message"
+        )
+      
+        output[[preview_id]] <- renderDT({
+      
+          # Column was dropped
+          if (!col_name %in% names(rv$cleaned_data)) {
+            return(
+              datatable(
+                data.frame(Message = "Column was dropped."),
+                options = list(dom = "t"),
+                rownames = FALSE
+              )
+            )
+          }
+      
+          original <- rv$raw_data[[col_name]]
+          fixed    <- rv$cleaned_data[[col_name]]
+          
+          n <- min(length(original), length(fixed))
+          
+          df <- data.frame(
+            Original = original[1:n],
+            Fixed    = fixed[1:n]
+          )
+      
+          datatable(
+            head(df, 10),
+            caption = "Before (Original) vs After (Fixed) — first 10 rows",
+            options = list(dom = "t", scrollX = TRUE),
+            rownames = FALSE
+          )
+        })
+      
+      }, ignoreInit = TRUE)
+    })
+  })
+})
+```
+
+
+
+```{r}
+# DUPLICATES PANEL
+# Only appears after all columns have been reviewed (rv$columns_done == TRUE)
+output$duplicates_panel_ui <- renderUI({
+  req(rv$columns_done, rv$cleaned_data)
+  n_dupes <- sum(duplicated(rv$cleaned_data))
+  # If no duplicates found, just show a success message — no buttons needed
+  if (n_dupes == 0) {
+    tagList(
+      hr(),
+      p("No duplicate rows found. You're good to go!")
+    )
+  } else {
+    # If duplicates exist, show count + 3 action options:
+    # 1. Preview: shows which rows are duplicated
+    # 2. Remove All: deletes all duplicate rows
+    # 3. Leave as is: keeps them and moves on
+    tagList(
+      hr(),
+      h4(paste0(n_dupes, " duplicate rows found.")),
+      actionButton("btn_preview_dupes", "Preview Duplicate Rows"),
+      actionButton("btn_remove_dupes",  "Remove All Duplicates", class = "btn-danger"),
+      actionButton("btn_leave_dupes",   "Leave as is"),
+      br(), br(),
+      DTOutput("dupes_preview_tbl")
+    )
+  }
+})
+
+# When "Preview Duplicate Rows" is clicked:
+# pulls all rows that are duplicated (including the original + its copy) and shows them in a table
+observeEvent(input$btn_preview_dupes, {
+  output$dupes_preview_tbl <- renderDT({
+    dupes <- rv$cleaned_data[duplicated(rv$cleaned_data) | duplicated(rv$cleaned_data, fromLast = TRUE), ]
+    datatable(dupes, options = list(scrollX = TRUE))
+  })
+})
+
+# When "Remove All Duplicates" is clicked:
+# keeps only the first occurrence of each row, updates both cleaned and engineered data
+observeEvent(input$btn_remove_dupes, {
+  rv$cleaned_data    <- rv$cleaned_data[!duplicated(rv$cleaned_data), ]
+  rv$engineered_data <- rv$cleaned_data
+  showNotification("Duplicates removed.", type = "message")
+})
+```
