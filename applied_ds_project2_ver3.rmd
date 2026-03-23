@@ -428,7 +428,7 @@ output$wizard_page <- renderUI({
   selectInput(
     'eda_plot_type',
     'Plot type:',
-    choices = c('Histogram','Boxplot','Bar Chart','Scattor Plot')
+    choices = c('Histogram','Boxplot','Bar Chart')
   ),
   
   selectInput('eda_x_var','X variable:',choices = NULL),
