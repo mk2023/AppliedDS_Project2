@@ -858,15 +858,7 @@ output$eda_interactive_plot <- renderPlot({
     boxplot(df[[x]], main = x, col = "green")
   } else if (input$eda_plot_type == "Bar Chart"){
     barplot(table(df[[x]]), main = x)
-  } else if (input$eda_plot_type == "Scatter Plot"){
-
-    req(input$eda_y_var)
-    plot(df[[x]], df[[input$eda_y_var]],
-         xlab = x,
-         ylab = input$eda_y_var,
-         pch = 19)
-
-  }
+  } 
 
 })
 # Restart
